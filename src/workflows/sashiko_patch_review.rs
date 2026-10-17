@@ -751,10 +751,11 @@ fn format_summary_feedback(violation: &str) -> String {
 // ---------------------------------------------------------------------------
 
 pub fn prescreen_stage() -> Stage<SashikoPatchReviewState, PrescreenOutput> {
-    prescreen_stage_with_effort(None)
+    prescreen_stage_with_effort(0.0, None)
 }
 
 pub fn prescreen_stage_with_effort(
+    temperature: f32,
     effort: Option<crate::ai::EffortMode>,
 ) -> Stage<SashikoPatchReviewState, PrescreenOutput> {
     Stage::builder("pre-screen")
@@ -783,6 +784,7 @@ pub fn prescreen_stage_with_effort(
         .policy(StagePolicy {
             tools: ToolScope::None,
             max_turns: 1,
+            temperature,
             reasoning_effort: effort.map(crate::ai::EffortMode::lightweight_stage_effort),
             ..Default::default()
         })
@@ -808,10 +810,11 @@ pub fn validate_sashiko_planning_output_with_effort(
 }
 
 pub fn planning_stage() -> Stage<SashikoPatchReviewState, PlanningOutput> {
-    planning_stage_with_effort(None)
+    planning_stage_with_effort(0.0, None)
 }
 
 pub fn planning_stage_with_effort(
+    temperature: f32,
     effort: Option<crate::ai::EffortMode>,
 ) -> Stage<SashikoPatchReviewState, PlanningOutput> {
     let dynamic_effort = effort == Some(crate::ai::EffortMode::Dynamic);
@@ -874,6 +877,7 @@ pub fn planning_stage_with_effort(
         .policy(StagePolicy {
             tools: ToolScope::None,
             max_turns: 1,
+            temperature,
             reasoning_effort: effort.map(crate::ai::EffortMode::lightweight_stage_effort),
             ..Default::default()
         })
@@ -1297,9 +1301,9 @@ pub fn build_sashiko_patch_review_workflow_with_effort(
     effort: Option<crate::ai::EffortMode>,
 ) -> Workflow<SashikoPatchReviewState> {
     Workflow::builder("sashiko_patch_review")
-        .stage(prescreen_stage_with_effort(effort))
+        .stage(prescreen_stage_with_effort(temperature, effort))
         .dynamic_parallel(
-            planning_stage_with_effort(effort),
+            planning_stage_with_effort(temperature, effort),
             move |state| resolve_analysis_stages_with_options(state, max_turns, temperature),
             ParallelPolicy::BestEffort,
         )
@@ -1456,6 +1460,89 @@ mod tests {
         let wf = build_sashiko_patch_review_workflow();
         assert_eq!(wf.name, "sashiko_patch_review");
         assert_eq!(wf.steps.len(), 5);
+        assert_eq!(
+            prescreen_stage_with_effort(1.0, None).policy.temperature,
+            1.0
+        );
+        assert_eq!(
+            planning_stage_with_effort(1.0, None).policy.temperature,
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_workflow_forwards_temperature_to_prescreen_and_planning() {
+        struct RecordingProvider {
+            temperatures: std::sync::Mutex<Vec<Option<f32>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::ai::AiProvider for RecordingProvider {
+            async fn generate_content(
+                &self,
+                request: crate::ai::AiRequest,
+            ) -> anyhow::Result<crate::ai::AiResponse> {
+                self.temperatures.lock().unwrap().push(request.temperature);
+                let user_msg = request
+                    .messages
+                    .first()
+                    .and_then(|m| m.content.as_deref())
+                    .unwrap_or_default();
+                let body = if user_msg.contains("<subsystem_guide_index>") {
+                    r#"{"selected_prompts": []}"#
+                } else if request.response_format.is_some() {
+                    r#"{"relevant_stages": []}"#
+                } else {
+                    r#"{"concerns": [], "dismissed_concerns": []}"#
+                };
+                Ok(crate::ai::AiResponse {
+                    content: Some(body.to_string()),
+                    thought: None,
+                    thought_signature: None,
+                    tool_calls: None,
+                    usage: None,
+                    truncated: false,
+                })
+            }
+
+            fn get_capabilities(&self) -> crate::ai::ProviderCapabilities {
+                crate::ai::ProviderCapabilities {
+                    model_name: "mock".to_string(),
+                    context_window_size: 1000,
+                }
+            }
+        }
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let prompts_dir = std::path::Path::new("projects/sashiko/prompts");
+
+        let provider = std::sync::Arc::new(RecordingProvider {
+            temperatures: std::sync::Mutex::new(Vec::new()),
+        });
+        let tools = std::sync::Arc::new(crate::toolbox::ToolBox::new(
+            temp_dir.path().to_path_buf(),
+            None,
+        ));
+        let env = crate::workflow::stage::WorkflowEnv {
+            provider: provider.clone(),
+            tools,
+            base_dir: prompts_dir,
+            context_tag: None,
+        };
+
+        let wf = build_sashiko_patch_review_workflow_with_options(1, 1.0);
+        let mut state = SashikoPatchReviewState::default();
+        crate::workflow::WorkflowEngine::execute(&wf, &env, &mut state, None)
+            .await
+            .unwrap();
+
+        let recorded = provider.temperatures.lock().unwrap().clone();
+        // pre-screen + planning + 3 core analysis stages (goal, implementation, execution-flow) + summary
+        assert_eq!(recorded.len(), 6);
+        assert!(
+            recorded.iter().all(|&t| t == Some(1.0)),
+            "expected all stages including pre-screen and planning to receive temperature 1.0, got {recorded:?}"
+        );
     }
 
     #[test]
