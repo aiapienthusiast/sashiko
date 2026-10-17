@@ -166,7 +166,10 @@ prompt_caching = true
 # [ai.vertex]
 # project_id = "my-gcp-project"  # Or ANTHROPIC_VERTEX_PROJECT_ID / GOOGLE_CLOUD_PROJECT
 # region = "us-east5"            # Or CLOUD_ML_REGION / GOOGLE_CLOUD_LOCATION (default: "us-east5")
-# prompt_caching = true          # Claude only, as are max_tokens/thinking/effort
+# prompt_caching = true          # Claude only
+# max_tokens = 8192              # Claude (default: 8192) and Gemini (default: 131072 on Argon, omitted otherwise)
+# thinking = "adaptive"          # Claude thinking mode or Gemini fallback thinking level ("LOW", "MEDIUM", "HIGH")
+# effort = "high"                # Claude effort or Gemini default thinking level ("LOW", "MEDIUM", "HIGH")
 
 # [ai.bedrock]
 # region = "us-east-1"

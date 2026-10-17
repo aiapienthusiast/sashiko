@@ -167,7 +167,7 @@ Settings for the Gemini provider (`provider = "gemini"`).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `explicit_prompt_caching` | bool | `false` | Use explicit caching hints in requests. |
-| `max_tokens` | integer | `131072` | Max output tokens per response, thinking included (`generationConfig.maxOutputTokens`). Models with Long Decodes v2 (`CONTINUATION` support, such as Argon) automatically continue across unary hops up to this cap. |
+| `max_tokens` | integer | model-derived | Max output tokens per response, thinking included (`generationConfig.maxOutputTokens`). Defaults to `131072` on models with Long Decodes v2 (`CONTINUATION` support, such as Argon) and is omitted otherwise (or when set to `0`) so the backend uses the model default. |
 | `thinking_level` | string | -- | Default thinking level sent as `thinkingConfig.thinkingLevel` (`"LOW"`, `"MEDIUM"`, `"HIGH"`) when a stage does not specify a per-request reasoning effort. |
 
 #### `[ai.openai_compat]`

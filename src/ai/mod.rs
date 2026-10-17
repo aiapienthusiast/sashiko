@@ -574,6 +574,25 @@ pub fn create_provider(settings: &Settings) -> Result<Arc<dyn AiProvider>> {
     create_provider_from_ai(&settings.ai)
 }
 
+#[cfg(feature = "vertex")]
+fn resolve_vertex_max_tokens(ai: &AiSettings) -> u32 {
+    let model = &ai.model;
+    let is_gemini = model.starts_with("gemini");
+    ai.vertex
+        .as_ref()
+        .and_then(|v| v.max_tokens)
+        .unwrap_or_else(|| {
+            if is_gemini {
+                ai.gemini
+                    .as_ref()
+                    .and_then(|g| g.max_tokens)
+                    .unwrap_or_else(|| crate::settings::default_gemini_max_tokens_for_model(model))
+            } else {
+                8192
+            }
+        })
+}
+
 /// Creates an AI provider based on AI settings only.
 pub fn create_provider_from_ai(ai: &AiSettings) -> Result<Arc<dyn AiProvider>> {
     match ai.provider.to_lowercase().as_str() {
@@ -792,16 +811,7 @@ pub fn create_provider_from_ai(ai: &AiSettings) -> Result<Arc<dyn AiProvider>> {
                 .unwrap_or_else(|| "us-east5".to_string());
             let enable_caching = vertex.map(|v| v.prompt_caching).unwrap_or(true);
             let is_gemini = model.starts_with("gemini");
-            let max_tokens = vertex.and_then(|v| v.max_tokens).unwrap_or_else(|| {
-                if is_gemini {
-                    ai.gemini
-                        .as_ref()
-                        .map(|g| g.max_tokens)
-                        .unwrap_or_else(crate::settings::default_gemini_max_tokens)
-                } else {
-                    8192
-                }
-            });
+            let max_tokens = resolve_vertex_max_tokens(ai);
             let thinking = vertex.and_then(|v| v.thinking.clone()).or_else(|| {
                 if is_gemini {
                     ai.gemini.as_ref().and_then(|g| g.thinking_level.clone())
@@ -1529,5 +1539,37 @@ mod tests {
         assert_eq!(provider.get_capabilities().model_name, "gemini-1.5-flash");
         assert!(nested_db.parent().unwrap().exists());
         Ok(())
+    }
+
+    #[cfg(feature = "vertex")]
+    #[test]
+    fn test_resolve_vertex_max_tokens() {
+        let mut settings = Settings::new().expect("Failed to load settings");
+        settings.ai.provider = "vertex".to_string();
+        settings.ai.vertex = None;
+        settings.ai.gemini = Some(crate::settings::GeminiSettings::default());
+
+        settings.ai.model = "gemini-3.1-pro-preview".to_string();
+        assert_eq!(resolve_vertex_max_tokens(&settings.ai), 0);
+
+        settings.ai.model = "gemini-4-argon".to_string();
+        assert_eq!(resolve_vertex_max_tokens(&settings.ai), 131_072);
+
+        settings.ai.model = "claude-opus-4-7".to_string();
+        assert_eq!(resolve_vertex_max_tokens(&settings.ai), 8192);
+
+        settings.ai.model = "gemini-3.1-pro-preview".to_string();
+        settings.ai.gemini.as_mut().unwrap().max_tokens = Some(65_536);
+        assert_eq!(resolve_vertex_max_tokens(&settings.ai), 65_536);
+
+        settings.ai.vertex = Some(crate::settings::VertexSettings {
+            project_id: None,
+            region: None,
+            prompt_caching: false,
+            max_tokens: Some(32_768),
+            thinking: None,
+            effort: None,
+        });
+        assert_eq!(resolve_vertex_max_tokens(&settings.ai), 32_768);
     }
 }

@@ -332,19 +332,19 @@ pub(crate) fn default_claude_max_tokens() -> u32 {
     32768
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 #[allow(unused)]
 pub struct GeminiSettings {
     #[serde(default)]
     pub explicit_prompt_caching: bool,
     /// Max output tokens per `generateContent` request, thinking included.
-    /// Sent as `generationConfig.maxOutputTokens`. On models with Long Decodes
-    /// v2 (`CONTINUATION` support, such as Argon), a single unary hop decodes
-    /// up to the per-hop limit and continues across hops until `max_tokens` is
-    /// reached.
-    #[serde(default = "default_gemini_max_tokens")]
-    pub max_tokens: u32,
+    /// Sent as `generationConfig.maxOutputTokens`. When unset, defaults to
+    /// `131_072` on models with Long Decodes v2 (`CONTINUATION` support, such
+    /// as Argon) and is omitted (`0`) on other Gemini models so the backend
+    /// uses the model's native output ceiling.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     /// Optional custom base URL (overrides default https://generativelanguage.googleapis.com).
     /// Can also be set via GOOGLE_GEMINI_BASE_URL or GEMINI_BASE_URL env vars.
     #[serde(default)]
@@ -365,23 +365,26 @@ pub struct GeminiSettings {
     pub thinking_level: Option<String>,
 }
 
-/// Also the default when the `[ai.gemini]` table is absent. Thinking counts
-/// toward it, and Long Decodes v2 models continue across unary hops up to this
-/// budget.
+/// Default `max_tokens` for Long Decodes v2 models (`CONTINUATION` support,
+/// such as Argon), where thinking counts toward the budget and unary hops
+/// continue up to this cap.
 pub(crate) fn default_gemini_max_tokens() -> u32 {
     131_072
 }
 
-impl Default for GeminiSettings {
-    fn default() -> Self {
-        Self {
-            explicit_prompt_caching: false,
-            max_tokens: default_gemini_max_tokens(),
-            base_url: None,
-            proxy_command: None,
-            auth_token_command: None,
-            thinking_level: None,
-        }
+/// Resolves the default `max_tokens` for a Gemini `model` when neither
+/// `[ai.vertex]` nor `[ai.gemini]` sets `max_tokens`.
+///
+/// Models with Long Decodes v2 continuation (matched via
+/// [`model_supports_effort`]) default to `131_072` so multi-hop continuation
+/// is enabled. All other Gemini models default to `0` (omitting
+/// `generationConfig.maxOutputTokens` so the backend uses the model's native
+/// output ceiling instead of rejecting a 128k value with 400 INVALID_ARGUMENT).
+pub(crate) fn default_gemini_max_tokens_for_model(model: &str) -> u32 {
+    if model_supports_effort(model) {
+        default_gemini_max_tokens()
+    } else {
+        0
     }
 }
 
@@ -434,7 +437,7 @@ pub struct VertexSettings {
     #[serde(default = "default_prompt_caching")]
     pub prompt_caching: bool,
     /// Maximum output tokens per call. When unset, defaults to 8192 for
-    /// Claude models and 131072 (`default_gemini_max_tokens`) for Gemini
+    /// Claude models and `default_gemini_max_tokens_for_model` for Gemini
     /// models (or `[ai.gemini] max_tokens` if configured).
     #[serde(default)]
     pub max_tokens: Option<u32>,
@@ -1875,13 +1878,23 @@ mod tests {
     }
 
     #[test]
-    fn test_gemini_max_tokens_defaults_to_128k() {
+    fn test_gemini_max_tokens_defaults_only_for_continuation_models() {
         let gemini: GeminiSettings = toml::from_str("").unwrap();
-        assert_eq!(gemini.max_tokens, 131_072);
-        assert_eq!(GeminiSettings::default().max_tokens, 131_072);
+        assert_eq!(gemini.max_tokens, None);
+        assert_eq!(GeminiSettings::default().max_tokens, None);
+
+        assert_eq!(
+            default_gemini_max_tokens_for_model("gemini-4-argon"),
+            131_072
+        );
+        assert_eq!(
+            default_gemini_max_tokens_for_model("gemini-3.1-pro-preview"),
+            0
+        );
+        assert_eq!(default_gemini_max_tokens_for_model("gemini-2.5-pro"), 0);
 
         let capped: GeminiSettings = toml::from_str("max_tokens = 65536").unwrap();
-        assert_eq!(capped.max_tokens, 65_536);
+        assert_eq!(capped.max_tokens, Some(65_536));
     }
 
     #[test]

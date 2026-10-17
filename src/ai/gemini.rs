@@ -488,8 +488,8 @@ impl GeminiClient {
             .map(str::to_ascii_uppercase);
 
         let max_tokens = settings
-            .map(|s| s.max_tokens)
-            .unwrap_or_else(crate::settings::default_gemini_max_tokens);
+            .and_then(|s| s.max_tokens)
+            .unwrap_or_else(|| crate::settings::default_gemini_max_tokens_for_model(&model));
 
         let client = Self::create_http_client(&api_key);
 
@@ -2420,6 +2420,28 @@ mod tests {
                 .get("maxOutputTokens")
                 .is_none()
         );
+
+        let pro_client =
+            GeminiClient::new_with_settings("gemini-3.1-pro-preview".to_string(), None);
+        assert_eq!(pro_client.max_tokens, 0);
+        let pro_with_table = GeminiClient::new_with_settings(
+            "gemini-3.1-pro-preview".to_string(),
+            Some(&crate::settings::GeminiSettings::default()),
+        );
+        assert_eq!(pro_with_table.max_tokens, 0);
+
+        let argon_client = GeminiClient::new_with_settings("gemini-4-argon".to_string(), None);
+        assert_eq!(argon_client.max_tokens, 131_072);
+
+        let explicit_settings = crate::settings::GeminiSettings {
+            max_tokens: Some(65_536),
+            ..Default::default()
+        };
+        let explicit_client = GeminiClient::new_with_settings(
+            "gemini-3.1-pro-preview".to_string(),
+            Some(&explicit_settings),
+        );
+        assert_eq!(explicit_client.max_tokens, 65_536);
 
         Ok(())
     }

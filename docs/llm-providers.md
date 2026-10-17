@@ -216,8 +216,10 @@ cp docs/examples/Settings.gemini-vertex.toml Settings.toml   # Gemini
 `rawPredict` endpoint, a `gemini-` name to Google's `generateContent`.
 Anything else is rejected at startup.
 
-`prompt_caching`, `max_tokens`, `thinking` and `effort` under `[ai.vertex]`
-apply to the Claude path only.
+`prompt_caching` under `[ai.vertex]` applies to the Claude path only.
+`max_tokens`, `thinking`, and `effort` under `[ai.vertex]` apply to both
+Claude and Gemini models (falling back to `[ai.gemini]` for Gemini models when
+unset).
 
 ## Kiro CLI
 
