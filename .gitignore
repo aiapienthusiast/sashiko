@@ -10,6 +10,7 @@ archives/
 third_party/linux/
 third_party/sashiko/
 benchmarks/smoke-repo/
+benchmarks/runs/
 review_trees/
 sashiko.log
 Settings.toml

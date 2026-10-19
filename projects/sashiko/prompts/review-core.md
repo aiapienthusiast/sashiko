@@ -108,7 +108,7 @@ in the commit message (either benchmark suite evaluation results or, for targete
 false-positive prompt refinements, local re-review results on the affected Linux
 patches/series). Note that the JSON files in `benchmarks/` are static
 ground-truth corpora of known positive bugs (`BenchmarkEntry` in
-`src/bin/benchmark.rs`) and do not store negative/false-positive test cases;
+`src/benchmark.rs`) and do not store negative/false-positive test cases;
 **never** demand that a prompt or workflow commit modify or add files in the
 `benchmarks/` directory. Flag Linux review-quality changes that provide no
 validation evidence in the commit message or risk silent regressions in detection

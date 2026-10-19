@@ -43,6 +43,13 @@ use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
+#[derive(Clone, Debug, Default)]
+pub struct WorkerSubprocessOverrides {
+    pub prompts: Option<PathBuf>,
+    pub settings_path: Option<PathBuf>,
+    pub report_preexisting: bool,
+}
+
 #[derive(Clone)]
 struct ReviewContext {
     semaphore: Arc<Semaphore>,
@@ -53,6 +60,7 @@ struct ReviewContext {
     quota_manager: Arc<QuotaManager>,
     target_review_count: usize,
     provider: Arc<dyn AiProvider>,
+    worker_overrides: WorkerSubprocessOverrides,
 }
 
 enum PatchResult {
@@ -113,6 +121,7 @@ pub struct Reviewer {
     baseline_registry: Arc<BaselineRegistry>,
     quota_manager: Arc<QuotaManager>,
     provider: Arc<dyn AiProvider>,
+    worker_overrides: WorkerSubprocessOverrides,
     initialized: std::sync::atomic::AtomicBool,
 }
 
@@ -158,8 +167,14 @@ impl Reviewer {
             baseline_registry,
             quota_manager: Arc::new(QuotaManager::new()),
             provider,
+            worker_overrides: WorkerSubprocessOverrides::default(),
             initialized: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    pub fn with_worker_overrides(mut self, overrides: WorkerSubprocessOverrides) -> Self {
+        self.worker_overrides = overrides;
+        self
     }
 
     /// Starts the reviewer service loop.
@@ -219,27 +234,35 @@ impl Reviewer {
         }
 
         loop {
-            match self.process_pending_patchsets().await {
-                Ok(_) => {}
-                Err(e) => error!("Error in reviewer loop: {}", e),
-            }
+            let had_work = match self.process_pending_patchsets().await {
+                Ok(count) => count > 0,
+                Err(e) => {
+                    error!("Error in reviewer loop: {}", e);
+                    false
+                }
+            };
 
             if let Err(e) = self.release_embargoed_results().await {
                 error!("Error releasing embargoed results: {}", e);
             }
 
-            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            if !had_work {
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            }
         }
     }
 
-    async fn process_pending_patchsets(&self) -> Result<()> {
-        let patchsets = self.db.get_pending_patchsets(10).await?;
+    async fn process_pending_patchsets(&self) -> Result<usize> {
+        let batch_size = self.settings.review.concurrency.max(10);
+        let patchsets = self.db.get_pending_patchsets(batch_size).await?;
 
         if patchsets.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
-        info!("Found {} pending patchsets for review", patchsets.len());
+        let count = patchsets.len();
+        info!("Found {} pending patchsets for review", count);
+        let mut claimed_count = 0usize;
 
         for mut patchset in patchsets {
             let permit = self.semaphore.clone().acquire_owned().await?;
@@ -248,7 +271,9 @@ impl Reviewer {
             // Atomically claim only if still Pending (avoids reopening a patchset
             // that was cancelled while waiting for a semaphore permit)
             match self.db.claim_patchset_for_review(patchset.id).await {
-                Ok(true) => {}
+                Ok(true) => {
+                    claimed_count += 1;
+                }
                 Ok(false) => {
                     info!(
                         "Skipping patchset {} as it is no longer Pending (likely cancelled)",
@@ -275,6 +300,7 @@ impl Reviewer {
                 quota_manager: self.quota_manager.clone(),
                 target_review_count,
                 provider: self.provider.clone(),
+                worker_overrides: self.worker_overrides.clone(),
             };
 
             let patchset_id = patchset.id;
@@ -286,7 +312,7 @@ impl Reviewer {
             );
         }
 
-        Ok(())
+        Ok(claimed_count)
     }
 
     async fn mark_patchset_failed_unless_cancelled(db: &Database, patchset_id: i64) {
@@ -355,6 +381,7 @@ impl Reviewer {
                 quota_manager: self.quota_manager.clone(),
                 target_review_count: 1,
                 provider: self.provider.clone(),
+                worker_overrides: self.worker_overrides.clone(),
             };
 
             if let Err(e) = Self::release_patchset_results(&context, &patchset).await {
@@ -1782,6 +1809,7 @@ impl Reviewer {
                 worktree_path,
                 ctx.provider.clone(),
                 ctx.llm_semaphore.clone(),
+                &ctx.worker_overrides,
             )
             .await;
 
@@ -2324,9 +2352,10 @@ async fn run_review_tool(
     worktree_path: Option<&Path>,
     provider: Arc<dyn AiProvider>,
     llm_semaphore: Arc<Semaphore>,
+    worker_overrides: &WorkerSubprocessOverrides,
 ) -> Result<serde_json::Value> {
     let cmd = default_worker_command()?;
-    run_review_tool_with_cmd(
+    run_review_tool_with_cmd_and_overrides(
         cmd,
         patchset_id,
         input_payload,
@@ -2340,6 +2369,7 @@ async fn run_review_tool(
         worktree_path,
         provider,
         llm_semaphore,
+        worker_overrides,
     )
     .await
 }
@@ -2369,9 +2399,10 @@ fn default_worker_command() -> Result<Command> {
     Ok(c)
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn run_review_tool_with_cmd(
-    mut cmd: Command,
+    cmd: Command,
     patchset_id: i64,
     input_payload: &serde_json::Value,
     settings: &Settings,
@@ -2385,6 +2416,42 @@ async fn run_review_tool_with_cmd(
     provider: Arc<dyn AiProvider>,
     llm_semaphore: Arc<Semaphore>,
 ) -> Result<serde_json::Value> {
+    run_review_tool_with_cmd_and_overrides(
+        cmd,
+        patchset_id,
+        input_payload,
+        settings,
+        db,
+        baseline,
+        review_index,
+        review_commit,
+        quota_manager,
+        review_id,
+        worktree_path,
+        provider,
+        llm_semaphore,
+        &WorkerSubprocessOverrides::default(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_review_tool_with_cmd_and_overrides(
+    mut cmd: Command,
+    patchset_id: i64,
+    input_payload: &serde_json::Value,
+    settings: &Settings,
+    db: Arc<Database>,
+    baseline: &str,
+    review_index: Option<i64>,
+    review_commit: Option<String>,
+    quota_manager: Arc<QuotaManager>,
+    review_id: i64,
+    worktree_path: Option<&Path>,
+    provider: Arc<dyn AiProvider>,
+    llm_semaphore: Arc<Semaphore>,
+    worker_overrides: &WorkerSubprocessOverrides,
+) -> Result<serde_json::Value> {
     // Cap concurrent model calls with the shared limiter instead of taking the
     // semaphore by hand around each call. This also releases the permit as soon
     // as the call returns, so a request that is backing off no longer occupies
@@ -2397,8 +2464,20 @@ async fn run_review_tool_with_cmd(
     );
     // Always, in practice: the daemon is required to name one. Without the flag
     // a worker puts its worktree under the system temporary directory.
+    if !settings.git.repository_path.trim().is_empty() {
+        cmd.arg("--repo").arg(&settings.git.repository_path);
+    }
+
     if let Some(dir) = settings.review.worktree_dir.as_deref() {
         cmd.arg("--worktree-dir").arg(dir);
+    }
+
+    if let Some(ref prompts) = worker_overrides.prompts {
+        cmd.arg("--prompts").arg(prompts);
+    }
+
+    if worker_overrides.report_preexisting {
+        cmd.arg("--report-preexisting");
     }
 
     cmd.args([
@@ -2437,6 +2516,10 @@ async fn run_review_tool_with_cmd(
         if key.starts_with("SASHIKO_") {
             cmd.env(&key, &value);
         }
+    }
+
+    if let Some(ref settings_path) = worker_overrides.settings_path {
+        cmd.env("SASHIKO_CONFIG", settings_path);
     }
 
     if let Some(idx) = review_index {
@@ -3519,6 +3602,7 @@ mod tests {
             quota_manager: Arc::new(QuotaManager::new()),
             target_review_count: 1,
             provider: Arc::new(MockProvider),
+            worker_overrides: WorkerSubprocessOverrides::default(),
         };
         let candidate = BaselineResolution::Commit(CommitId::parse(&base_sha).unwrap());
         let diffs = vec![(
@@ -3642,6 +3726,7 @@ mod tests {
             quota_manager: Arc::new(QuotaManager::new()),
             target_review_count: 1,
             provider: Arc::new(MockProvider),
+            worker_overrides: WorkerSubprocessOverrides::default(),
         };
 
         // A decoy tree that is unreachable, and one that shares the local
@@ -4145,6 +4230,7 @@ fi
             quota_manager: Arc::new(QuotaManager::new()),
             target_review_count: 1,
             provider: Arc::new(MockProvider),
+            worker_overrides: WorkerSubprocessOverrides::default(),
         })
     }
 
@@ -4350,6 +4436,7 @@ fi
             quota_manager,
             target_review_count: 1,
             provider,
+            worker_overrides: WorkerSubprocessOverrides::default(),
         };
 
         // Create dummy patchset and patch in DB
@@ -4749,6 +4836,7 @@ echo '{"patchset_id": 1, "patches": [{"index": 1, "status": "applied"}]}'
             quota_manager: Arc::new(QuotaManager::new()),
             target_review_count: 1,
             provider: Arc::new(MockProvider),
+            worker_overrides: WorkerSubprocessOverrides::default(),
         };
 
         // Scenario 1: Mixed findings
@@ -5077,6 +5165,7 @@ inline review content 4\n\n-- \nSashiko AI review · https://sashiko.dev/#/patch
             quota_manager: Arc::new(QuotaManager::new()),
             target_review_count: 1,
             provider: Arc::new(MockProvider),
+            worker_overrides: WorkerSubprocessOverrides::default(),
         };
 
         Reviewer::queue_notifications(
@@ -5242,6 +5331,7 @@ inline review content 4\n\n-- \nSashiko AI review · https://sashiko.dev/#/patch
             quota_manager: Arc::new(QuotaManager::new()),
             target_review_count: 1,
             provider: Arc::new(MockProvider),
+            worker_overrides: WorkerSubprocessOverrides::default(),
         };
 
         let empty_findings = Vec::new();
@@ -5450,6 +5540,7 @@ inline review content 4\n\n-- \nSashiko AI review · https://sashiko.dev/#/patch
             quota_manager: Arc::new(QuotaManager::new()),
             target_review_count: 1,
             provider: Arc::new(MockProvider),
+            worker_overrides: WorkerSubprocessOverrides::default(),
         };
 
         Reviewer::review_patchset_task(ctx, patchset).await;

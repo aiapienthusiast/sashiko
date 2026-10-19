@@ -226,11 +226,10 @@ local operator token lives:
 - filename is always `LOCAL_TOKEN_FILE_NAME` = `.sashiko-local-token`.
 
 The rationale in the doc comment is the contract: the database is the one
-thing the server, `sashiko-cli` and `benchmark` already agree on, so a client
+thing the server and `sashiko-cli` already agree on, so a client
 that reads a different configuration than the server is by definition not
 local to it. Writers and readers: `src/main.rs` (`publish_local_token`, and
-the `remove_file` on shutdown), `src/bin/sashiko-cli.rs` (`build_client`),
-`src/bin/benchmark.rs`.
+the `remove_file` on shutdown) and `src/bin/sashiko-cli.rs` (`build_client`).
 
 **Changing `database.url` moves the token file.** A diff that changes the
 derivation, or that adds a configurable override, breaks the three readers

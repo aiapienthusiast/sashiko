@@ -6,6 +6,7 @@ review_trees/
 archives/
 third_party/linux/
 benchmarks/smoke-repo/
+benchmarks/runs/
 benchmark_results.json
 *.db
 *.db-shm

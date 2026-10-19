@@ -86,6 +86,12 @@ impl FetchAgent {
         }
     }
 
+    pub async fn fetch_and_submit_batch(&mut self, repo_url: Option<String>, commits: Vec<String>) {
+        let mut queue: HashMap<Option<String>, HashSet<String>> = HashMap::new();
+        queue.entry(repo_url).or_default().extend(commits);
+        self.process_queue(&mut queue).await;
+    }
+
     async fn process_queue(&self, queue: &mut HashMap<Option<String>, HashSet<String>>) {
         info!("Processing fetch queue with {} repos", queue.len());
 

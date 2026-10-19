@@ -165,7 +165,7 @@ patch-review or initial bug-discovery benchmark suites (`benchmarks/`).
 Furthermore, **never** report that a prompt or workflow commit failed to add or
 modify test cases in the `benchmarks/` directory: `benchmarks/*.json` are static
 ground-truth datasets of known positive kernel bugs (`BenchmarkEntry` in
-`src/bin/benchmark.rs`) and do not support negative/false-positive test cases or
+`src/benchmark.rs`) and do not support negative/false-positive test cases or
 per-commit test additions. For targeted false-positive refinements in
 `third_party/prompts/`, local re-review results on the affected Linux
 patches/series reported in the commit message are sufficient validation. Only
