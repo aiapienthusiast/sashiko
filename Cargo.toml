@@ -14,6 +14,7 @@ exclude = [
     "third_party/linux/",
     "llama.cpp/",
     "archives/",
+    "benchmarks/runs/",
     "review_trees/",
     "deployment/",
     "designs/",
@@ -34,12 +35,6 @@ path = "src/main.rs"
 [[bin]]
 name = "sashiko-cli"
 path = "src/bin/sashiko-cli.rs"
-
-[[bin]]
-name = "benchmark"
-path = "src/bin/benchmark.rs"
-test = false
-required-features = ["server"]
 
 [features]
 default = ["server"]

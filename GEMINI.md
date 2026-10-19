@@ -51,9 +51,10 @@ Sashiko reviews changes to its own repository using the `--project sashiko` prof
 # Project Map
 
 ## Core Application (`src/`)
-- `main.rs`: Application entry point (`sashiko` server daemon, `sashiko init`, `sashiko review`).
-- `bin/`: CLI and utility binaries (`sashiko-cli.rs`, `benchmark.rs`).
+- `main.rs`: Application entry point (`sashiko` server daemon, `sashiko init`, `sashiko review`, `sashiko benchmark`).
+- `bin/`: CLI binary (`sashiko-cli.rs`).
 - `lib.rs`: Shared library root and `ReviewStatus` types.
+- `benchmark.rs`: Built-in benchmark runner, per-run database/artifact preservation, and structured AI judge telemetry (`#[cfg(feature = "server")]`).
 - `worker/`: Background workers (`bug_worker.rs`, `email.rs`, `forge.rs`, `patchwork.rs`, `compressor.rs`, `repack.rs`, `sync.rs`, `prefetch.rs`, `prompts.rs`).
 - `workflow/`: Core state-machine LLM workflow engine.
 - `workflows/`: Declarative review and bug pipelines per project (`linux_patch_review.rs`, `linux_bug.rs`, `sashiko_patch_review.rs`), plus shared security/normalization helpers (`guard.rs`) and the review-map lineage builder (`review_map.rs`).
@@ -93,7 +94,7 @@ Sashiko reviews changes to its own repository using the `--project sashiko` prof
 
 **CRITICAL RULE:** Never run the full (`benchmark.json`) or small (`benchmark_small.json`) benchmarks without an explicit human request.
 
-See `docs/benchmarking.md` for full setup and CLI options (`cargo run --bin benchmark -- --file <path>`). Available suites in `benchmarks/`:
+See `docs/benchmarking.md` for full setup and CLI options (`sashiko benchmark <path>` or `cargo run --bin sashiko -- benchmark <path>`). Available suites in `benchmarks/`:
 - `benchmark.json` (999 entries, full suite)
 - `benchmark_small.json` (99 entries, standard suite)
 - `benchmark_tiny.json` (9 entries, quick iteration)

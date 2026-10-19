@@ -236,6 +236,71 @@ enum Commands {
         #[arg(long, hide = true)]
         report_preexisting: bool,
     },
+
+    /// Run a benchmark suite against an isolated per-run database
+    Benchmark {
+        /// Benchmark JSON file path (positional or via --file)
+        #[arg(value_name = "FILE", required_unless_present = "file_flag")]
+        file: Option<PathBuf>,
+
+        /// Benchmark JSON file path (backwards-compatible flag)
+        #[arg(
+            short = 'f',
+            long = "file",
+            value_name = "FILE",
+            conflicts_with = "file"
+        )]
+        file_flag: Option<PathBuf>,
+
+        /// Override the target git repository path or URL
+        #[arg(short = 'r', long)]
+        repo: Option<String>,
+
+        /// Explicit database path to create or re-analyze
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Base directory for benchmark runs (default: benchmarks/runs)
+        #[arg(long, default_value = "benchmarks/runs")]
+        output_dir: PathBuf,
+
+        /// Skip ingestion and reviews; re-evaluate an existing benchmark database
+        #[arg(long)]
+        analyze_only: bool,
+
+        /// Override review and judge concurrency
+        #[arg(long)]
+        concurrency: Option<usize>,
+
+        /// AI provider override
+        #[arg(long)]
+        ai_provider: Option<String>,
+
+        /// Reasoning effort mode override (mid, high, or dynamic) for supported models
+        #[arg(long)]
+        effort: Option<EffortMode>,
+
+        /// Include pre-existing bugs in verification and report generation
+        #[arg(long)]
+        report_preexisting: bool,
+
+        /// Settings file (default: SASHIKO_CONFIG, then ./Settings.toml, then
+        /// ~/.config/sashiko.toml)
+        #[arg(long)]
+        settings: Option<PathBuf>,
+
+        /// Prompt directory
+        #[arg(long)]
+        prompts: Option<PathBuf>,
+
+        /// Output format
+        #[arg(long, default_value = "text")]
+        format: OutputFormat,
+
+        /// When to use color
+        #[arg(long, default_value = "auto")]
+        color: ColorMode,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -292,6 +357,15 @@ fn cli_overrides(cli: &Cli) -> Overrides {
             stages: stages.clone(),
             ..Default::default()
         },
+        Some(Commands::Benchmark {
+            ai_provider,
+            effort,
+            ..
+        }) => Overrides {
+            ai_provider: ai_provider.clone(),
+            effort: effort.or(cli.effort),
+            ..Default::default()
+        },
         None => Overrides {
             no_ai: cli.no_ai,
             effort: cli.effort,
@@ -327,7 +401,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // same file the command works from. A failure is not fatal yet, because most
     // commands only talk to a running server and need no settings file at all.
     let named_settings = match &cli.command {
-        Some(Commands::Review { settings, .. }) => settings.clone(),
+        Some(Commands::Review { settings, .. }) | Some(Commands::Benchmark { settings, .. }) => {
+            settings.clone()
+        }
         _ => None,
     };
     let settings_path = Settings::resolve_path(named_settings.as_deref());
@@ -492,6 +568,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         return Ok(());
                     }
                     Err(e) => exit_worker_with_error(e.to_string()),
+                }
+            }
+            Commands::Benchmark {
+                file,
+                file_flag,
+                repo,
+                db,
+                output_dir,
+                analyze_only,
+                concurrency,
+                report_preexisting,
+                prompts,
+                format,
+                color,
+                ..
+            } => {
+                let settings = anyhow::Context::with_context(settings_result, || {
+                    format!("Failed to load settings from {}", settings_path.display())
+                })?;
+                let benchmark_file = file
+                    .clone()
+                    .or_else(|| file_flag.clone())
+                    .ok_or("benchmark file path is required")?;
+
+                #[cfg(feature = "server")]
+                {
+                    return handle_benchmark_command(
+                        project,
+                        benchmark_file,
+                        repo.clone(),
+                        db.clone(),
+                        output_dir.clone(),
+                        *analyze_only,
+                        *concurrency,
+                        *report_preexisting,
+                        resolve_prompts_path(prompts.clone(), project)?,
+                        Some(settings_path),
+                        settings,
+                        *format,
+                        *color,
+                    )
+                    .await;
+                }
+                #[cfg(not(feature = "server"))]
+                {
+                    let _ = (
+                        project,
+                        benchmark_file,
+                        repo,
+                        db,
+                        output_dir,
+                        analyze_only,
+                        concurrency,
+                        report_preexisting,
+                        prompts,
+                        settings,
+                        format,
+                        color,
+                    );
+                    return Err(
+                        "this build has no benchmark runner; rebuild with --features server".into(),
+                    );
                 }
             }
         }
@@ -2578,6 +2716,269 @@ async fn handle_review_command(
     Ok(())
 }
 
+#[cfg(feature = "server")]
+#[allow(clippy::too_many_arguments)]
+async fn handle_benchmark_command(
+    project: ProjectId,
+    file: PathBuf,
+    repo: Option<String>,
+    db: Option<PathBuf>,
+    output_dir: PathBuf,
+    analyze_only: bool,
+    concurrency: Option<usize>,
+    report_preexisting: bool,
+    prompts: PathBuf,
+    settings_path: Option<PathBuf>,
+    settings: Settings,
+    format: OutputFormat,
+    color: ColorMode,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let terminal = terminfo::Database::from_env().ok();
+    let out_stream = OutputStream::detect(color, &std::io::stdout(), terminal.as_ref());
+
+    let report = sashiko::benchmark::run_benchmark(
+        sashiko::benchmark::BenchmarkOptions {
+            project,
+            file,
+            repo,
+            db,
+            output_dir: Some(output_dir),
+            analyze_only,
+            concurrency,
+            report_preexisting,
+            prompts,
+            settings_path,
+        },
+        settings,
+    )
+    .await?;
+
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        OutputFormat::Text => {
+            print_benchmark_report(&report, out_stream.color)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+fn print_benchmark_report(
+    report: &sashiko::benchmark::BenchmarkRunReport,
+    color_choice: ColorChoice,
+) -> std::io::Result<()> {
+    let mut stdout = StandardStream::stdout(color_choice);
+    write_benchmark_report(&mut stdout, report)
+}
+
+#[cfg(feature = "server")]
+fn write_benchmark_report(
+    out: &mut impl WriteColor,
+    report: &sashiko::benchmark::BenchmarkRunReport,
+) -> std::io::Result<()> {
+    let meta = &report.metadata;
+    let sum = &report.summary;
+
+    writeln!(out)?;
+    write_bold(out, "=== Benchmark Summary (")?;
+    write_colored(out, Color::Cyan, &meta.run_id)?;
+    write_bold(out, ") ===\n")?;
+    writeln!(
+        out,
+        "Suite:          {} ({} entries across {} unique commits)",
+        meta.benchmark_file, meta.total_entries, meta.unique_commits
+    )?;
+    writeln!(
+        out,
+        "Model:          {}/{} (effort: {}, concurrency: {})",
+        meta.ai_provider,
+        meta.model,
+        meta.effort.as_deref().unwrap_or("default"),
+        meta.concurrency
+    )?;
+    writeln!(
+        out,
+        "Sashiko:        v{} ({}{}, prompts: {})",
+        meta.sashiko_version,
+        meta.sashiko_git_sha,
+        if meta.sashiko_git_dirty { "-dirty" } else { "" },
+        meta.prompts_git_hash
+    )?;
+    writeln!(out, "Wall Clock:     {}s", meta.wall_clock_secs)?;
+
+    let denom = sum.evaluated_entries.max(1) as f64;
+    let partial_pct = (sum.partially_detected as f64 / denom) * 100.0;
+    let missed_pct = (sum.missed as f64 / denom) * 100.0;
+
+    writeln!(out, "\nDetection Accuracy:")?;
+    write!(out, "  Detected:           ")?;
+    write_colored(
+        out,
+        Color::Green,
+        &format!(
+            "{}/{} ({:.1}%)",
+            sum.detected, sum.evaluated_entries, sum.exact_detection_rate_pct
+        ),
+    )?;
+    writeln!(out)?;
+    write!(out, "  Partially Detected: ")?;
+    write_colored(
+        out,
+        Color::Yellow,
+        &format!(
+            "{}/{} ({:.1}%)",
+            sum.partially_detected, sum.evaluated_entries, partial_pct
+        ),
+    )?;
+    writeln!(out)?;
+    write!(out, "  Missed:             ")?;
+    write_colored(
+        out,
+        if sum.missed > 0 {
+            Color::Red
+        } else {
+            Color::Green
+        },
+        &format!(
+            "{}/{} ({:.1}%)",
+            sum.missed, sum.evaluated_entries, missed_pct
+        ),
+    )?;
+    writeln!(out)?;
+    write!(out, "  Total Detection:    ")?;
+    write_bold(
+        out,
+        &format!(
+            "{}/{} ({:.1}%)\n",
+            sum.detected + sum.partially_detected,
+            sum.evaluated_entries,
+            sum.total_detection_rate_pct
+        ),
+    )?;
+
+    if sum.missed > 0 {
+        writeln!(out, "\nMiss Diagnosis:")?;
+        writeln!(
+            out,
+            "  Not raised by any stage:        {}",
+            sum.missed_not_raised
+        )?;
+        writeln!(
+            out,
+            "  Raised then wrongly dismissed:  {}",
+            sum.missed_wrongly_dismissed
+        )?;
+        if !sum.false_dismissals_by_stage.is_empty() {
+            let stages: Vec<String> = sum
+                .false_dismissals_by_stage
+                .iter()
+                .map(|(s, c)| format!("{s}: {c}"))
+                .collect();
+            writeln!(
+                out,
+                "    Dismissing stages:            {}",
+                stages.join(", ")
+            )?;
+        }
+        if sum.missed_preexisting_filtered > 0 {
+            writeln!(
+                out,
+                "  Filtered as pre-existing:       {}",
+                sum.missed_preexisting_filtered
+            )?;
+        }
+        if sum.missed_review_failed > 0 {
+            writeln!(
+                out,
+                "  Review failed or missing:       {}",
+                sum.missed_review_failed
+            )?;
+        }
+    }
+
+    writeln!(out, "\nPrecision & Finding Breakdown (Unique Commits):")?;
+    writeln!(
+        out,
+        "  Patch Findings:        {} ({:.2}/commit) | Pre-existing Findings: {}",
+        sum.total_patch_findings, sum.avg_patch_findings_per_commit, sum.total_preexisting_findings
+    )?;
+    writeln!(
+        out,
+        "  Severity Breakdown:    Critical: {}, High: {}, Medium: {}, Low: {}",
+        sum.findings_by_severity.critical,
+        sum.findings_by_severity.high,
+        sum.findings_by_severity.medium,
+        sum.findings_by_severity.low
+    )?;
+    writeln!(
+        out,
+        "  Matched to Target:     {} | Unmatched Extra (Noise): {}",
+        sum.matched_findings, sum.unmatched_extra_findings
+    )?;
+    writeln!(
+        out,
+        "  Clean Target-Only:     {}/{} reviewed commits",
+        sum.clean_target_only_commits, sum.reviewed_commits
+    )?;
+    writeln!(
+        out,
+        "  Stage Concerns:        {} raised / {} dismissed ({:.1}% converted)",
+        sum.total_concerns_raised,
+        sum.total_concerns_dismissed,
+        sum.concern_to_finding_conversion_pct
+    )?;
+
+    writeln!(out, "\nResource Distributions (per reviewed commit):")?;
+    writeln!(
+        out,
+        "  Tokens In:      total {:>9} | mean {:>8.1} | p50 {:>7} | p90 {:>7} | max {:>7} (cache {:.1}%)",
+        sum.tokens_in.total,
+        sum.tokens_in.mean,
+        sum.tokens_in.p50,
+        sum.tokens_in.p90,
+        sum.tokens_in.max,
+        sum.cache_hit_rate_pct
+    )?;
+    writeln!(
+        out,
+        "  Tokens Out:     total {:>9} | mean {:>8.1} | p50 {:>7} | p90 {:>7} | max {:>7}",
+        sum.tokens_out.total,
+        sum.tokens_out.mean,
+        sum.tokens_out.p50,
+        sum.tokens_out.p90,
+        sum.tokens_out.max
+    )?;
+    writeln!(
+        out,
+        "  Turns:          total {:>9} | mean {:>8.1} | p50 {:>7} | p90 {:>7} | max {:>7}",
+        sum.turns.total, sum.turns.mean, sum.turns.p50, sum.turns.p90, sum.turns.max
+    )?;
+    writeln!(
+        out,
+        "  Duration (s):   total {:>9} | mean {:>8.1} | p50 {:>7} | p90 {:>7} | max {:>7}",
+        sum.duration_secs.total,
+        sum.duration_secs.mean,
+        sum.duration_secs.p50,
+        sum.duration_secs.p90,
+        sum.duration_secs.max
+    )?;
+
+    writeln!(out, "\nPreserved Run Artifacts:")?;
+    write!(out, "  Database:     ")?;
+    write_colored(out, Color::Cyan, &meta.database_path)?;
+    writeln!(out)?;
+    write!(out, "  JSON Report:  ")?;
+    write_colored(out, Color::Cyan, &meta.results_json_path)?;
+    writeln!(out, " (and benchmark_results.json)")?;
+    write!(out, "  Summary MD:   ")?;
+    write_colored(out, Color::Cyan, &meta.summary_md_path)?;
+    writeln!(out)?;
+    Ok(())
+}
+
 fn current_git_toplevel() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     let output = sashiko::git_cmd::in_dir(&cwd)
@@ -2902,6 +3303,13 @@ fn count_findings_slice(findings: &[&Value]) -> FindingCounts {
 
 fn write_colored(out: &mut impl WriteColor, color: Color, text: &str) -> std::io::Result<()> {
     out.set_color(ColorSpec::new().set_fg(Some(color)))?;
+    write!(out, "{}", text)?;
+    out.reset()
+}
+
+#[cfg(feature = "server")]
+fn write_bold(out: &mut impl WriteColor, text: &str) -> std::io::Result<()> {
+    out.set_color(ColorSpec::new().set_bold(true))?;
     write!(out, "{}", text)?;
     out.reset()
 }
@@ -4777,6 +5185,71 @@ mod tests {
 
         let after = Cli::parse_from(["sashiko", "review", "--effort", "dynamic"]);
         assert_eq!(cli_overrides(&after).effort, Some(EffortMode::Dynamic));
+    }
+
+    #[test]
+    fn test_cli_benchmark() {
+        let positional =
+            Cli::parse_from(["sashiko", "benchmark", "benchmarks/benchmark_smoke.json"]);
+        match &positional.command {
+            Some(Commands::Benchmark {
+                file,
+                file_flag,
+                analyze_only,
+                output_dir,
+                ..
+            }) => {
+                assert_eq!(
+                    file.as_deref(),
+                    Some(Path::new("benchmarks/benchmark_smoke.json"))
+                );
+                assert!(file_flag.is_none());
+                assert!(!analyze_only);
+                assert_eq!(output_dir, Path::new("benchmarks/runs"));
+            }
+            _ => panic!("expected benchmark command"),
+        }
+
+        let flag = Cli::parse_from([
+            "sashiko",
+            "benchmark",
+            "--file",
+            "benchmarks/benchmark_tiny.json",
+            "--analyze-only",
+            "--concurrency",
+            "4",
+            "--ai-provider",
+            "claude",
+            "--effort",
+            "high",
+            "--report-preexisting",
+            "--format",
+            "json",
+        ]);
+        assert_eq!(cli_overrides(&flag).ai_provider.as_deref(), Some("claude"));
+        assert_eq!(cli_overrides(&flag).effort, Some(EffortMode::High));
+        match flag.command {
+            Some(Commands::Benchmark {
+                file,
+                file_flag,
+                analyze_only,
+                concurrency,
+                report_preexisting,
+                format,
+                ..
+            }) => {
+                assert!(file.is_none());
+                assert_eq!(
+                    file_flag.as_deref(),
+                    Some(Path::new("benchmarks/benchmark_tiny.json"))
+                );
+                assert!(analyze_only);
+                assert_eq!(concurrency, Some(4));
+                assert!(report_preexisting);
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected benchmark command"),
+        }
     }
 
     #[test]
