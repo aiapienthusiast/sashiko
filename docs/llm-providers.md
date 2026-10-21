@@ -481,6 +481,24 @@ context_window_size = 128000
 max_tokens = 16384
 ```
 
+**Cheaper Inference example:**
+
+[Cheaper Inference](https://cheaperinference.com) is an OpenAI-compatible
+gateway to models from several labs behind a single endpoint and API key.
+Point `base_url` at `https://api.cheaperinference.com/v1` and use a bare
+model id such as `gpt-5.4-mini`:
+
+```toml
+[ai]
+provider = "openai-compatible"
+model = "gpt-5.4-mini"
+
+[ai.openai_compat]
+base_url = "https://api.cheaperinference.com/v1"
+context_window_size = 400000
+max_tokens = 16384
+```
+
 For OpenAI's own API with an API key (rather than a self-hosted
 compatible endpoint), use `docs/examples/Settings.openai-api.toml`:
 set `provider = "openai"`, `model = "gpt-5.6-sol"`, and export

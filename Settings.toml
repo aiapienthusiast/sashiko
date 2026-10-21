@@ -143,6 +143,12 @@ temperature = 1.0
 # max_input_tokens = 128000
 # max_interactions = 100
 
+# To use Cheaper Inference (OpenAI-compatible gateway), also export OPENAI_API_KEY with the API key in the environment
+# provider = "openai-compatible"
+# model = "gpt-5.4-mini"
+# max_input_tokens = 400000
+# max_interactions = 100
+
 # [ai.gemini]
 # explicit_prompt_caching = false
 # max_tokens = 131072
@@ -162,6 +168,7 @@ prompt_caching = true
 # [ai.openai_compat]        # Enable openrouter url
 # base_url = "https://openrouter.ai/api/v1"
 # base_url = "https://api.orcarouter.ai/v1"  # Enable for OrcaRouter
+# base_url = "https://api.cheaperinference.com/v1"  # Enable for Cheaper Inference
 
 # [ai.vertex]
 # project_id = "my-gcp-project"  # Or ANTHROPIC_VERTEX_PROJECT_ID / GOOGLE_CLOUD_PROJECT

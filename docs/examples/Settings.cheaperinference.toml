@@ -1,0 +1,9 @@
+[ai]
+# Can be "openai" or "openai-compatible"
+provider = "openai-compatible"
+model = "gpt-5.4-mini"
+
+[ai.openai_compat]
+base_url = "https://api.cheaperinference.com/v1"
+context_window_size = 400000
+max_tokens = 16384
